@@ -24,7 +24,7 @@ Requirements: Ubuntu 22.04 x86-64, Docker, `qemu-user-static`, Vivado + Vitis
 2025.2 in `/opt/AMD_Design/2025.2`, and about 100 GB of free disk.
 
 ```bash
-git clone <this repository> snickerdoodle-pynq4 && cd snickerdoodle-pynq4
+git clone https://github.com/eexma67/pynq4-snickerdoodle-pismasher.git snickerdoodle-pynq4 && cd snickerdoodle-pynq4
 
 # PYNQ at the pinned commit, plus the Zynq-7000 patch
 git clone https://github.com/Xilinx/PYNQ.git

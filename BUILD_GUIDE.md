@@ -71,7 +71,7 @@ snickerdoodle-pynq4/
 ### 4.1 PYNQ at the exact commit, plus the board patch
 
 ```bash
-git clone <this repository> ~/Downloads/snickerdoodle-pynq4
+git clone https://github.com/eexma67/pynq4-snickerdoodle-pismasher.git ~/Downloads/snickerdoodle-pynq4
 cd ~/Downloads/snickerdoodle-pynq4
 git clone https://github.com/Xilinx/PYNQ.git
 cd PYNQ
