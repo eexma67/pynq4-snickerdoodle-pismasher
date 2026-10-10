@@ -18,7 +18,14 @@ Author: Mohammed Al-Badri
 | `calc_overlay/` | Example overlay: a signed 32-bit `+ - * /` calculator in Verilog, its testbench, Vivado build and PYNQ driver |
 | `BUILD_GUIDE.md` | The full build guide |
 
-## Quick start
+## Prebuilt image
+
+To skip the build, download `Snickerdoodle_piSmasher-4.0.0.img.xz` and
+`SHA256SUMS` from the
+[v4.0.0 release](https://github.com/eexma67/pynq4-snickerdoodle-pismasher/releases/tag/v4.0.0).
+Its release notes explain how to verify and flash it.
+
+## Quick start (build it yourself)
 
 Requirements: Ubuntu 22.04 x86-64, Docker, `qemu-user-static`, Vivado + Vitis
 2025.2 in `/opt/AMD_Design/2025.2`, and about 100 GB of free disk.
