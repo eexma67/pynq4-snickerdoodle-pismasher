@@ -1,0 +1,213 @@
+/*
+ * snickerdoodle black + piSmasher 4.1 board nodes, appended to the system
+ * device tree generated from base/base.xsa.
+ *
+ * Ported from the device tree of krtkl's PYNQ 2.5 piSmasher image
+ * (snickerdoodle-black-pismasher.dts).
+ */
+
+/ {
+	model = "snickerdoodle black on piSmasher";
+
+	aliases {
+		serial0 = &uart0;
+		ethernet0 = &gem0;
+		ethernet1 = &gem1;
+		mmc0 = &sdhci0;
+		mmc1 = &sdhci1;
+		i2c0 = &i2c1;
+		spi0 = &qspi;
+		spi1 = &spi1;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		linux,cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x10000000>;
+			alignment = <0x2000>;
+			linux,cma-default;
+		};
+	};
+
+	/* TI WL1837 enable, MIO 9 */
+	wlan_en_reg: fixed-regulator-wlen {
+		compatible = "regulator-fixed";
+		regulator-name = "wlan-en-regulator";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&gpio0 9 4>;
+		startup-delay-us = <70000>;
+		enable-active-high;
+	};
+
+	/* Peripheral power enable, MIO 20 */
+	fixed-regulator-powen {
+		compatible = "regulator-fixed";
+		regulator-name = "power-en-regulator";
+		gpio = <&gpio0 20 4>;
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		startup-delay-us = <70000>;
+		enable-active-high;
+	};
+
+	/*
+	 * ULPI PHY (USB3320) on the piSmasher, driven through the ChipIdea
+	 * viewport. drv-vbus makes the PHY supply VBUS, which the USB2514 hub
+	 * needs to attach.
+	 */
+	usb_ulpi_phy0: phy0@e0002000 {
+		compatible = "ulpi-phy";
+		#phy-cells = <0>;
+		reg = <0xe0002000 0x1000>;
+		view-port = <0x0170>;
+		drv-vbus;
+	};
+};
+
+&uart0 {
+	status = "okay";
+	cts-override;
+};
+
+&sdhci0 {
+	status = "okay";
+	disable-wp;
+	no-1-8-v;
+};
+
+/* WiFi/Bluetooth module on SDIO1 */
+&sdhci1 {
+	status = "okay";
+	vmmc-supply = <&wlan_en_reg>;
+	bus-width = <4>;
+	cap-power-off-card;
+	keep-power-in-suspend;
+	non-removable;
+	no-1-8-v;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	wlcore: wlcore@2 {
+		compatible = "ti,wl1837";
+		reg = <2>;
+		interrupt-parent = <&gpio0>;
+		interrupts = <0 4>;
+	};
+};
+
+/*
+ * USB host through the piSmasher's USB2514B hub. The hub runs on its strap
+ * defaults: its SMBus configuration port is not reachable on this board, so
+ * it is described as an onboard USB device rather than an I2C client. The
+ * onboard_usb_dev driver releases its reset (MIO 16) once the root hub is up;
+ * releasing it earlier, before the ULPI PHY is running, leaves the hub absent.
+ */
+&usb0 {
+	status = "okay";
+	dr_mode = "host";
+	usb-phy = <&usb_ulpi_phy0>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	hub@1 {
+		compatible = "usb424,2514";
+		reg = <1>;
+		reset-gpios = <&gpio0 16 1>;
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	clock-frequency = <100000>;
+};
+
+/* Platform microcontroller (spi-ctrl) */
+&spi1 {
+	status = "okay";
+	num-cs = <1>;
+	is-decoded-cs = <0>;
+
+	spidev@0 {
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+	};
+};
+
+&qspi {
+	status = "okay";
+	is-dual = <0>;
+	num-cs = <1>;
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <50000000>;
+		spi-rx-bus-width = <4>;
+		spi-tx-bus-width = <4>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+};
+
+/*
+ * piSmasher Ethernet: both GEMs go through EMIO to gmii_to_rgmii cores in
+ * the PL (MDIO addresses 8 and 9); the external PHYs sit at address 0.
+ */
+&gem0 {
+	status = "okay";
+	phy-mode = "rgmii-id";
+	phy-handle = <&eth0_phy>;
+};
+
+/* The gmii_to_rgmii nodes are generated from the XSA; give them their PHY. */
+&ps7_ethernet_0_mdio {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	/* PHY reset, MIO 19: released before the bus is scanned */
+	reset-gpios = <&gpio0 19 1>;
+	reset-delay-us = <10000>;
+	reset-post-delay-us = <50000>;
+
+	eth0_phy: ethernet-phy@0 {
+		reg = <0>;
+	};
+};
+
+&ethernet_gmii_to_rgmii_0 {
+	phy-handle = <&eth0_phy>;
+};
+
+&gem1 {
+	status = "okay";
+	phy-mode = "rgmii-id";
+	phy-handle = <&eth1_phy>;
+};
+
+&ps7_ethernet_1_mdio {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	/* PHY reset, MIO 17: released before the bus is scanned */
+	reset-gpios = <&gpio0 17 1>;
+	reset-delay-us = <10000>;
+	reset-post-delay-us = <50000>;
+
+	eth1_phy: ethernet-phy@0 {
+		reg = <0>;
+	};
+};
+
+&ethernet_gmii_to_rgmii_1 {
+	phy-handle = <&eth1_phy>;
+};

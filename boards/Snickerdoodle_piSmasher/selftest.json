@@ -1,0 +1,26 @@
+{
+  "board": "Snickerdoodle_piSmasher",
+  "defaults": { "hardware": false, "timeout": 30 },
+  "tests": [
+    { "id": "bash/resize", "name": "Root filesystem auto-resize" },
+    { "id": "bash/networking", "name": "Networking (global IPv4)" },
+    { "id": "python/cma", "name": "CMA pool (256 MB of 1 GB DDR)",
+      "params": { "min_kb": 250000 } },
+    { "id": "python/jupyter", "name": "Jupyter server" },
+    { "id": "python/xrt", "name": "XRT runtime" },
+    { "id": "bash/systemd_units", "name": "systemd failed units" },
+    { "id": "python/image_identity", "name": "Image identity (PynqLinux; version read from image)" },
+    { "id": "python/user_groups", "name": "xilinx user + groups" },
+    { "id": "python/notebooks", "name": "Notebook delivery" },
+    { "id": "bash/serial_autologin", "name": "Serial console autologin" },
+    { "id": "bash/merged_usr", "name": "merged-/usr layout" },
+    { "id": "python/baseconfig", "name": "base-config patches" },
+    { "id": "python/sysfs_gpio", "name": "sysfs GPIO interface",
+      "params": { "label": "zynq_gpio" } },
+    { "id": "python/pybind11", "name": "pybind11 C++ compile + import", "timeout": 240 },
+    { "id": "python/overlay_allocate", "name": "PYNQ overlay + DMA buffer", "timeout": 180,
+      "params": { "bitstream": "base.bit" } },
+    { "id": "python/webcam", "name": "USB webcam (/dev/video0)", "timeout": 35, "hardware": true },
+    { "id": "python/internet", "name": "Internet connectivity", "timeout": 45 }
+  ]
+}

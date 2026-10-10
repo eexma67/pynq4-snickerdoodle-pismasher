@@ -1,0 +1,1216 @@
+diff --git a/sdbuild/Makefile b/sdbuild/Makefile
+index d04a32f..d3a8356 100644
+--- a/sdbuild/Makefile
++++ b/sdbuild/Makefile
+@@ -35,9 +35,10 @@ SYSROOT_ROOT := $(CURDIR)/output/sysroot
+ BSP_ROOT := $(CURDIR)/output/bsp
+ DIST_ROOT := $(CURDIR)/output/dist
+ 
+-# aarch64 only (Zynq-7000 deprecated). EDF's xilinx-bootbin builds the boot
+-# components into BOOT.BIN, so no per-component list is needed.
++# EDF's xilinx-bootbin builds the boot components into BOOT.BIN, so no
++# per-component list is needed. Zynq-7000 (arm) boots a zImage.
+ KERNEL_aarch64 := Image
++KERNEL_arm := zImage
+ 
+ export CCACHEDIR
+ export ROOTDIR
+@@ -135,7 +136,7 @@ EXTRA_BOOT_$1 := $$(BUILD_ROOT)/$1.extra_boot
+ BOARD_EDF_ENV_$1 := $$(BOARDDIR_$1)/edf.env
+ 
+ BOOT_BIN_$1     := $$(BOOT_ROOT_$1)/BOOT.BIN
+-KERNEL_IMAGE_$1 := $$(BOOT_ROOT_$1)/Image
++KERNEL_IMAGE_$1 := $$(BOOT_ROOT_$1)/$$(KERNEL_$$(ARCH_$1))
+ SYSTEM_DTB_$1   := $$(BOOT_ROOT_$1)/system.dtb
+ MODULES_$1      := $$(BOOT_ROOT_$1)/modules.tgz
+ ZOCL_KO_$1      := $$(BOOT_ROOT_$1)/zocl.ko
+@@ -144,7 +145,8 @@ BOOT_FILES_$1   := $$(BOOT_BIN_$1) $$(KERNEL_IMAGE_$1) $$(SYSTEM_DTB_$1) $$(MODU
+ BOOT_STAMP_$1   := $$(BOOT_ROOT_$1)/.boot_built
+ 
+ BOOT_ENV_$1 := BOARD=$1 BOARD_PATH=$$(BOARDDIR_$1) ARCH=$$(ARCH_$1) \
+-	FPGA_MANAGER=$$(FPGA_MANAGER_$1) OUTPUT_DIR=$$(BOOT_ROOT) ROOTDIR=$$(CURDIR)
++	FPGA_MANAGER=$$(FPGA_MANAGER_$1) OUTPUT_DIR=$$(BOOT_ROOT) ROOTDIR=$$(CURDIR) \
++	BITSTREAM=$$(strip $$(BITSTREAM_ABS_$1))
+ 
+ $$(BOOT_STAMP_$1): $$(BOARD_EDF_ENV_$1) $$(BITSTREAM_ABS_$1) | $$(BOOT_ROOT_$1)
+ 	$$(BOOT_ENV_$1) $$(SCRIPT_DIR)/build_edf_boot.sh
+@@ -204,7 +206,7 @@ $$(ROOT_$1) : $$(BASE_PATH_$1) $$(BITSTREAM_ABS_$1) $$(STAGE4_DEPENDS_$1) $$(MOD
+ # Build the SD image (FAT32 boot + ext4 root); see scripts/make_sdimage.sh.
+ $$(IMAGE_$1) : $$(ROOT_$1) $$(BOOT_FILES_$1) | $$(IMAGE_ROOT)
+ 	ROOTFS_TAR=$$(ROOT_$1) BOOT_DIR=$$(BOOT_ROOT_$1) OUT_IMG=$$@ \
+-		EXTRA_BOOT=$$(EXTRA_BOOT_$1) \
++		EXTRA_BOOT=$$(EXTRA_BOOT_$1) KERNEL_NAME=$$(KERNEL_$$(ARCH_$1)) \
+ 		$$(SCRIPT_DIR)/make_sdimage.sh
+ 
+ 
+diff --git a/sdbuild/boot/meta-pynq/recipes-bsp/device-tree/device-tree.bbappend b/sdbuild/boot/meta-pynq/recipes-bsp/device-tree/device-tree.bbappend
+index 4dffa3e..f4d63a9 100644
+--- a/sdbuild/boot/meta-pynq/recipes-bsp/device-tree/device-tree.bbappend
++++ b/sdbuild/boot/meta-pynq/recipes-bsp/device-tree/device-tree.bbappend
+@@ -4,6 +4,7 @@ FPGA_MANAGER := "${@d.getVar('BB_ORIGENV', False).getVar('FPGA_MANAGER', True) o
+ 
+ # Track board.dtsi's content hash so edits invalidate the device-tree sstate.
+ PYNQ_BOARD_DTSI := "${@d.getVar('BB_ORIGENV', False).getVar('PYNQ_BOARD_DTSI', True) or ''}"
++PYNQ_BOARDNAME := "${@d.getVar('BB_ORIGENV', False).getVar('PYNQ_BOARDNAME', True) or 'Unknown'}"
+ do_configure[file-checksums] += "${@(d.getVar('PYNQ_BOARD_DTSI') + ':True') if d.getVar('PYNQ_BOARD_DTSI') else ''}"
+ 
+ # Only the Linux device tree gets these; the Versal PMC and PSM MicroBlaze
+@@ -11,13 +12,16 @@ do_configure[file-checksums] += "${@(d.getVar('PYNQ_BOARD_DTSI') + ':True') if d
+ PYNQ_DT_FRAGMENTS ?= ""
+ PYNQ_DT_FRAGMENTS:zynqmp = "pynq_xlnk_zynqmp.dtsi pynq_uio_zynqmp.dtsi ${@'pynq_zocl_poll_zynqmp.dtsi' if d.getVar('FPGA_MANAGER') == '1' else 'pynq_zocl_intc_zynqmp.dtsi'}"
+ PYNQ_DT_FRAGMENTS:versal = "pynq_uio_versal.dtsi pynq_zocl_poll_versal.dtsi"
++PYNQ_DT_FRAGMENTS:zynq = "pynq_uio_zynq.dtsi ${@'pynq_zocl_poll_zynq.dtsi' if d.getVar('FPGA_MANAGER') == '1' else 'pynq_zocl_intc_zynq.dtsi'}"
+ 
++# TARGET_OS is "linux" on aarch64 but "linux-gnueabi" on Zynq-7000 (arm).
+ EXTRA_DT_INCLUDE_FILES:append:linux = " pynq_bootargs.dtsi ${PYNQ_DT_FRAGMENTS}"
++EXTRA_DT_INCLUDE_FILES:append:linux-gnueabi = " pynq_bootargs.dtsi ${PYNQ_DT_FRAGMENTS}"
+ 
+-do_configure:append:linux() {
++pynq_add_board_dt() {
+     dts="${DT_FILES_PATH}/${BASE_DTS}.dts"
+     board_dtsi="${PYNQ_BOARD_DTSI}"
+-    board_name="${@d.getVar('BB_ORIGENV', False).getVar('PYNQ_BOARDNAME', True) or 'Unknown'}"
++    board_name="${PYNQ_BOARDNAME}"
+     if [ -n "${board_dtsi}" ] && [ -f "${board_dtsi}" ]; then
+         printf '\n' >> "${dts}"
+         cat "${board_dtsi}" >> "${dts}"
+@@ -25,4 +29,12 @@ do_configure:append:linux() {
+     printf '\n/ { chosen { pynq_board = "%s"; }; };\n' "${board_name}" >> "${dts}"
+ }
+ 
++do_configure:append:linux() {
++    pynq_add_board_dt
++}
++
++do_configure:append:linux-gnueabi() {
++    pynq_add_board_dt
++}
++
+ do_configure[vardepsexclude] = "BB_ORIGENV"
+diff --git a/sdbuild/boot/meta-pynq/recipes-xrt/zocl/files/0001-zocl-support-32-bit-Zynq-7000.patch b/sdbuild/boot/meta-pynq/recipes-xrt/zocl/files/0001-zocl-support-32-bit-Zynq-7000.patch
+new file mode 100644
+index 0000000..17a330d
+--- /dev/null
++++ b/sdbuild/boot/meta-pynq/recipes-xrt/zocl/files/0001-zocl-support-32-bit-Zynq-7000.patch
+@@ -0,0 +1,58 @@
++From: PYNQ snickerdoodle port
++Subject: [PATCH] zocl: support 32-bit Zynq-7000
++
++Zynq-7000 kernels have no AI Engine driver. Add the two stubs that the
++__NONE_PETALINUX__ AIE stub block was missing (frequency get/set), so zocl
++links without CONFIG_XILINX_AIE.
++
++The XRT error-code masks were unsigned long; on 32-bit ARM the module and
++class fields (shifted to bits 32-47) were truncated away. Make them 64-bit.
++
++diff --git a/src/runtime_src/core/edge/drm/zocl/include/zocl_aie.h b/src/runtime_src/core/edge/drm/zocl/include/zocl_aie.h
++index 8f98657..3a6fc28 100644
++--- a/src/runtime_src/core/edge/drm/zocl/include/zocl_aie.h
+++++ b/src/runtime_src/core/edge/drm/zocl/include/zocl_aie.h
++@@ -147,6 +147,18 @@ static inline void
++ aie_free_errors(struct aie_errors *aie_errs)
++ {
++ }
+++
+++static inline int
+++aie_partition_get_freq(struct device *dev, u64 *freq)
+++{
+++	return -EINVAL;
+++}
+++
+++static inline int
+++aie_partition_set_freq_req(struct device *dev, u64 freq)
+++{
+++	return -EINVAL;
+++}
++ #endif
++ int zocl_read_aieresbin(struct drm_zocl_slot *slot, struct axlf* axlf, char __user *xclbin);
++ struct aie_info {
++diff --git a/src/runtime_src/core/include/xrt/detail/xrt_error_code.h b/src/runtime_src/core/include/xrt/detail/xrt_error_code.h
++index 63d961b..eef5114 100644
++--- a/src/runtime_src/core/include/xrt/detail/xrt_error_code.h
+++++ b/src/runtime_src/core/include/xrt/detail/xrt_error_code.h
++@@ -67,15 +67,15 @@
++ typedef uint64_t xrtErrorCode;
++ typedef uint64_t xrtErrorTime;
++ 
++-#define XRT_ERROR_NUM_MASK		0xFFFFUL
+++#define XRT_ERROR_NUM_MASK		0xFFFFULL
++ #define XRT_ERROR_NUM_SHIFT		0
++-#define XRT_ERROR_DRIVER_MASK		0xFUL
+++#define XRT_ERROR_DRIVER_MASK		0xFULL
++ #define XRT_ERROR_DRIVER_SHIFT		16
++-#define XRT_ERROR_SEVERITY_MASK		0xFUL
+++#define XRT_ERROR_SEVERITY_MASK		0xFULL
++ #define XRT_ERROR_SEVERITY_SHIFT	24
++-#define XRT_ERROR_MODULE_MASK		0xFUL
+++#define XRT_ERROR_MODULE_MASK		0xFULL
++ #define XRT_ERROR_MODULE_SHIFT		32
++-#define XRT_ERROR_CLASS_MASK		0xFUL
+++#define XRT_ERROR_CLASS_MASK		0xFULL
++ #define XRT_ERROR_CLASS_SHIFT		40
++ 
++ #define	XRT_ERROR_CODE_BUILD(num, driver, severity, module, eclass) \
+diff --git a/sdbuild/boot/meta-pynq/recipes-xrt/zocl/zocl_git.bb b/sdbuild/boot/meta-pynq/recipes-xrt/zocl/zocl_git.bb
+index e7b3422..4ec3b15 100644
+--- a/sdbuild/boot/meta-pynq/recipes-xrt/zocl/zocl_git.bb
++++ b/sdbuild/boot/meta-pynq/recipes-xrt/zocl/zocl_git.bb
+@@ -14,6 +14,12 @@ SRCREV ?= "74dec3c9c4f6dd9bfb62ae11e71ec96bcc4859eb"
+ 
+ S = "${WORKDIR}/git/src/runtime_src/core/edge/drm/zocl"
+ 
++# Zynq-7000 has no AI Engine driver: build zocl against its AIE stubs, and
++# fix the error-code masks that truncate on 32-bit.
++FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
++SRC_URI:append:zynq = " file://0001-zocl-support-32-bit-Zynq-7000.patch;patchdir=${WORKDIR}/git"
++EXTRA_OEMAKE:append:zynq = " cflags_zocl=-D__NONE_PETALINUX__"
++
+ inherit module
+ 
+ pkg_postinst_ontarget_${PN}() {
+diff --git a/sdbuild/packages/python_packages_noble/qemu.sh b/sdbuild/packages/python_packages_noble/qemu.sh
+index 9592fa1..c4e57aa 100755
+--- a/sdbuild/packages/python_packages_noble/qemu.sh
++++ b/sdbuild/packages/python_packages_noble/qemu.sh
+@@ -20,5 +20,30 @@ source /etc/profile.d/pynq_venv.sh
+ # setuptools==59.6.0) don't install on Python 3.12.
+ python3 -m pip install --upgrade wheel
+ 
++# armhf gets few binary wheels, so meson/pybind11 packages (contourpy,
++# matplotlib, ...) build from source. Hide Ubuntu's pybind11 2.11 pkg-config
++# file so meson uses the pybind11 from the isolated build environment.
++pybind11_pc=/usr/share/pkgconfig/pybind11.pc
++if [ "$(uname -m)" = "armv7l" ]; then
++    if [ -f ${pybind11_pc} ]; then
++        mv ${pybind11_pc} ${pybind11_pc}.hidden
++        trap "mv ${pybind11_pc}.hidden ${pybind11_pc}" EXIT
++    fi
++    # ninja can deadlock under qemu-user (child exit never noticed), so let
++    # CMake-based builds use make. Link pyzmq against the system libzmq
++    # instead of building the bundled one.
++    export CMAKE_GENERATOR="Unix Makefiles"
++    export CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)
++    export MAKEFLAGS="-j$(nproc)"
++    DEBIAN_FRONTEND=noninteractive apt-get install -y libzmq3-dev ninja-build
++    # Keep built wheels in the persistent ccache mount so a failed stage
++    # does not have to recompile everything under emulation.
++    export PIP_CACHE_DIR=/ccache/pip
++    # Packages without armv7l wheels compile against their build deps at
++    # their newest; Cython 3.3 rejects pyzmq 27.1's sources.
++    echo "cython<3.2" > /root/pip-build-constraints.txt
++    export PIP_BUILD_CONSTRAINT=/root/pip-build-constraints.txt
++fi
++
+ python3 -m pip install -r requirements.txt
+ rm requirements.txt
+diff --git a/sdbuild/packages/selftest/tests/python/cma.py b/sdbuild/packages/selftest/tests/python/cma.py
+index c64287f..21dc299 100644
+--- a/sdbuild/packages/selftest/tests/python/cma.py
++++ b/sdbuild/packages/selftest/tests/python/cma.py
+@@ -1,16 +1,18 @@
+-# Verify CMA pool size is at least ~512 MB (CmaTotal in /proc/meminfo).
++# Verify the CMA pool size (CmaTotal in /proc/meminfo). The minimum defaults
++# to ~512 MB; boards with less DDR set "min_kb" in their manifest params.
+ 
+ # p: manifest params dict for this test (from selftest.json "params").
+-from results import bad, ok, params, sh, main_entry
++from results import bad, ok, sh, main_entry
+ 
+ 
+ def run(p=None):
++    min_kb = int((p or {}).get("min_kb", 500000))
+     _, val = sh("awk '/CmaTotal/{print $2}' /proc/meminfo")
+     kb = int(val) if val.isdigit() else 0
+-    if kb >= 500000:
+-        ok("CmaTotal %d kB (~512 MB)" % kb)
++    if kb >= min_kb:
++        ok("CmaTotal %d kB (>= %d kB)" % (kb, min_kb))
+     else:
+-        bad("CmaTotal %d kB (<500 MB)" % kb)
++        bad("CmaTotal %d kB (< %d kB)" % (kb, min_kb))
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/sdbuild/packages/xrtlib/pre.sh b/sdbuild/packages/xrtlib/pre.sh
+new file mode 100755
+index 0000000..0970d24
+--- /dev/null
++++ b/sdbuild/packages/xrtlib/pre.sh
+@@ -0,0 +1,10 @@
++#!/bin/bash
++
++set -x
++set -e
++
++target=$1
++script_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
++
++# Patch for XRT's edge build without the AI Engine runtime (Zynq-7000).
++sudo cp $script_dir/xrt-edge-without-aie.patch $target/root/
+diff --git a/sdbuild/packages/xrtlib/qemu.sh b/sdbuild/packages/xrtlib/qemu.sh
+index 0cf5243..c12b943 100755
+--- a/sdbuild/packages/xrtlib/qemu.sh
++++ b/sdbuild/packages/xrtlib/qemu.sh
+@@ -7,10 +7,15 @@ set -e
+ set -x
+ 
+ ARCH=$(uname -m)
+-if [[ "${ARCH}" != "aarch64" ]]; then
+-    echo "ERROR: xrtlib only supports aarch64 (got ${ARCH})." >&2
+-    exit 1
+-fi
++case "${ARCH}" in
++    aarch64) WITH_AIE=1 ;;
++    # Zynq-7000: no AI Engine, so XRT is built without the AIE runtime.
++    armv7l) WITH_AIE=0 ;;
++    *)
++        echo "ERROR: xrtlib supports aarch64 and armv7l (got ${ARCH})." >&2
++        exit 1
++        ;;
++esac
+ 
+ # Pin XRT to the same tag as the zocl kernel module recipe in
+ # sdbuild/boot/meta-pynq/recipes-xrt/zocl/zocl_git.bb. Userspace and
+@@ -53,7 +58,12 @@ cd xrt-git
+ git checkout "tags/${XRT_TAG}" -b temp
+ git submodule init
+ git submodule update
++if [[ ${WITH_AIE} == 0 ]]; then
++    git apply /root/xrt-edge-without-aie.patch
++fi
++rm -f /root/xrt-edge-without-aie.patch
+ 
++if [[ ${WITH_AIE} == 1 ]]; then
+ cd /root
+ git clone https://github.com/Xilinx/aie-rt aie-rt-git
+ cd aie-rt-git
+@@ -77,6 +87,10 @@ cmake --build aiefal-build
+ cmake --install aiefal-build
+ 
+ sed -i '/^add_subdirectory(runtime_src)$/i set (XRT_AIE_BUILD ON)' src/CMake/embedded_system.cmake
++AIE_CXXFLAGS="-DXRT_ENABLE_AIE -DFAL_LINUX=on"
++else
++AIE_CXXFLAGS=""
++fi
+ 
+ # Build pyxrt in embedded builds.
+ echo "" >> src/CMake/embedded_system.cmake
+@@ -91,7 +105,7 @@ sed -i 's|^add_subdirectory(device_offload/hw_emu)$|# skipped: no xrt_hwemu in e
+ 
+ cd build
+ # -edge builds the embedded (zocl) shim; see XRT-install-location.md.
+-CXXFLAGS="-DXRT_ENABLE_AIE -DFAL_LINUX=on" \
++CXXFLAGS="${AIE_CXXFLAGS}" \
+     XRT_NATIVE_BUILD=no ./build.sh -dbg -edge -noctest -noinit -noert
+ cd Debug
+ make install
+@@ -125,4 +139,4 @@ install -m 0644 /root/xrt-git/src/runtime_src/tools/scripts/setup.csh \
+ ${PYTHON_BIN} -c 'import pyxrt; print("pyxrt imported OK:", pyxrt.__file__)'
+ 
+ cd /
+-rm -rf /root/xrt-git
++rm -rf /root/xrt-git /root/aie-rt-git
+diff --git a/sdbuild/packages/xrtlib/xrt-edge-without-aie.patch b/sdbuild/packages/xrtlib/xrt-edge-without-aie.patch
+new file mode 100644
+index 0000000..dbf20f1
+--- /dev/null
++++ b/sdbuild/packages/xrtlib/xrt-edge-without-aie.patch
+@@ -0,0 +1,91 @@
++diff --git a/src/runtime_src/core/common/api/xrt_module.cpp b/src/runtime_src/core/common/api/xrt_module.cpp
++index 7aed7ba..2ff0903 100644
++--- a/src/runtime_src/core/common/api/xrt_module.cpp
+++++ b/src/runtime_src/core/common/api/xrt_module.cpp
++@@ -1400,7 +1400,7 @@ class module_elf_aie2p : public module_elf
++         patch_scheme = static_cast<patcher::symbol_type>(rela->r_addend & schema_mask);
++       }
++ 
++-      std::string argnm{ symname, symname + std::min(strlen(symname), dynstr->get_size()) };
+++      std::string argnm{ symname, symname + std::min<size_t>(strlen(symname), dynstr->get_size()) };
++       patcher::patch_info pi = patch_scheme == patcher::symbol_type::scalar_32bit_kind
++         // st_size is is encoded using register value mask for scaler_32
++         // for other pacthing scheme it is encoded using size of dma
++@@ -1634,7 +1634,7 @@ class module_elf_aie2ps : public module_elf
++   // microblaze controller (uC), then create ctrlcode objects from the
++   // data.
++   void
++-  initialize_column_ctrlcode(std::map<uint32_t, std::vector<size_t>>& pad_offsets, bool is_grp_elf)
+++  initialize_column_ctrlcode(std::map<uint32_t, std::vector<uint64_t>>& pad_offsets, bool is_grp_elf)
++   {
++     // Elf sections for a single page
++     struct elf_page
++@@ -1716,7 +1716,7 @@ class module_elf_aie2ps : public module_elf
++   }
++ 
++   void
++-  initialize_arg_patchers(const std::map<uint32_t, std::vector<size_t>>& pad_offsets)
+++  initialize_arg_patchers(const std::map<uint32_t, std::vector<uint64_t>>& pad_offsets)
++   {
++     auto dynsym = m_elfio.sections[".dynsym"];
++     auto dynstr = m_elfio.sections[".dynstr"];
++@@ -1743,7 +1743,7 @@ class module_elf_aie2ps : public module_elf
++         if (dynstr_offset >= dynstr->get_size())
++           throw std::runtime_error("Invalid symbol name offset " + std::to_string(dynstr_offset));
++         auto symname = dynstr->get_data() + dynstr_offset;
++-        std::string argnm{ symname, symname + std::min(strlen(symname), dynstr->get_size()) };
+++        std::string argnm{ symname, symname + std::min<size_t>(strlen(symname), dynstr->get_size()) };
++ 
++         // patching can be done to ctrlcode or ctrlpkt section
++         auto patch_sec = m_elfio.sections[sym->st_shndx];
++diff --git a/src/runtime_src/core/edge/user/hwctx_object.cpp b/src/runtime_src/core/edge/user/hwctx_object.cpp
++index 1d408e2..0ea6ff2 100644
++--- a/src/runtime_src/core/edge/user/hwctx_object.cpp
+++++ b/src/runtime_src/core/edge/user/hwctx_object.cpp
++@@ -153,13 +153,21 @@ uint64_t
++ hwctx_object::
++ get_aie_freq() const
++ {
+++#ifdef XRT_ENABLE_AIE
++  return m_shim->get_aie_freq(this);
+++#else
+++  throw xrt_core::error(std::errc::not_supported, __func__);
+++#endif
++ }
++ 
++ void
++ hwctx_object::
++ set_aie_freq(uint64_t freq_hz) const
++ {
+++#ifdef XRT_ENABLE_AIE
++  return m_shim->set_aie_freq(this, freq_hz);
+++#else
+++  throw xrt_core::error(std::errc::not_supported, __func__);
+++#endif
++ }
++ }
++diff --git a/src/runtime_src/core/include/xrt/detail/xrt_error_code.h b/src/runtime_src/core/include/xrt/detail/xrt_error_code.h
++index 63d961b..eef5114 100644
++--- a/src/runtime_src/core/include/xrt/detail/xrt_error_code.h
+++++ b/src/runtime_src/core/include/xrt/detail/xrt_error_code.h
++@@ -67,15 +67,15 @@
++ typedef uint64_t xrtErrorCode;
++ typedef uint64_t xrtErrorTime;
++ 
++-#define XRT_ERROR_NUM_MASK		0xFFFFUL
+++#define XRT_ERROR_NUM_MASK		0xFFFFULL
++ #define XRT_ERROR_NUM_SHIFT		0
++-#define XRT_ERROR_DRIVER_MASK		0xFUL
+++#define XRT_ERROR_DRIVER_MASK		0xFULL
++ #define XRT_ERROR_DRIVER_SHIFT		16
++-#define XRT_ERROR_SEVERITY_MASK		0xFUL
+++#define XRT_ERROR_SEVERITY_MASK		0xFULL
++ #define XRT_ERROR_SEVERITY_SHIFT	24
++-#define XRT_ERROR_MODULE_MASK		0xFUL
+++#define XRT_ERROR_MODULE_MASK		0xFULL
++ #define XRT_ERROR_MODULE_SHIFT		32
++-#define XRT_ERROR_CLASS_MASK		0xFUL
+++#define XRT_ERROR_CLASS_MASK		0xFULL
++ #define XRT_ERROR_CLASS_SHIFT		40
++ 
++ #define	XRT_ERROR_CODE_BUILD(num, driver, severity, module, eclass) \
+diff --git a/sdbuild/scripts/build_edf_boot.sh b/sdbuild/scripts/build_edf_boot.sh
+index 62ff06d..3c153d5 100755
+--- a/sdbuild/scripts/build_edf_boot.sh
++++ b/sdbuild/scripts/build_edf_boot.sh
+@@ -1,6 +1,6 @@
+ #!/usr/bin/env bash
+ #
+-# Build boot artefacts (BOOT.BIN, Image, system.dtb, modules.tgz, zocl.ko)
++# Build boot artefacts (BOOT.BIN, Image/zImage, system.dtb, modules.tgz, zocl.ko)
+ # for a PYNQ board with AMD's EDF/bitbake flow.
+ #
+ # Env inputs (set by the Makefile): BOARD, BOARD_PATH, ARCH, OUTPUT_DIR,
+@@ -11,6 +11,9 @@ set -euo pipefail
+ 
+ BOARD="${BOARD:?BOARD must be set}"
+ BOARD_PATH="${BOARD_PATH:?BOARD_PATH must be set}"
++ARCH="${ARCH:-aarch64}"
++# Zynq-7000 (arm) kernels are deployed and booted as a zImage.
++if [ "${ARCH}" = "arm" ]; then KERNEL_NAME=zImage; else KERNEL_NAME=Image; fi
+ OUTPUT_DIR="${OUTPUT_DIR:?OUTPUT_DIR must be set}"
+ ROOTDIR="${ROOTDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ 
+@@ -218,17 +221,23 @@ step_extract_artifacts() {
+     elif [ -f "${deploy}/BOOT.BIN" ]; then cp "${deploy}/BOOT.BIN" "${board_out}/BOOT.BIN"
+     else echo "ERROR: BOOT.BIN not found in ${deploy}" >&2; ls -la "${deploy}/" 2>/dev/null || true; exit 1; fi
+ 
+-    # Kernel Image (may be in a sibling deploy dir when boot != linux machine)
++    # Kernel image (may be in a sibling deploy dir when boot != linux machine)
+     local image_found=false
+     for d in "${deploy}" "${linux_deploy}"; do
+-        if [ -f "${d}/Image" ]; then cp "${d}/Image" "${board_out}/Image"; image_found=true; break; fi
++        if [ -f "${d}/${KERNEL_NAME}" ]; then cp -L "${d}/${KERNEL_NAME}" "${board_out}/${KERNEL_NAME}"; image_found=true; break; fi
+     done
+-    [ "${image_found}" = true ] || { echo "ERROR: kernel Image not found in ${deploy} or ${linux_deploy}" >&2; exit 1; }
++    [ "${image_found}" = true ] || { echo "ERROR: kernel ${KERNEL_NAME} not found in ${deploy} or ${linux_deploy}" >&2; exit 1; }
+ 
+-    # Device tree (first non-symlink .dtb)
+-    for dtb in "${deploy}/system.dtb" "${deploy}/"*.dtb; do
+-        if [ -f "${dtb}" ] && [ ! -L "${dtb}" ]; then cp "${dtb}" "${board_out}/system.dtb"; break; fi
+-    done
++    # Device tree: system.dtb (a symlink to devicetree/<dts>.dtb on SDT
++    # machines), else the first non-symlink .dtb. u-boot's own dtb is not it.
++    if [ -e "${deploy}/system.dtb" ]; then
++        cp -L "${deploy}/system.dtb" "${board_out}/system.dtb"
++    else
++        for dtb in "${deploy}/"*.dtb; do
++            case "$(basename "${dtb}")" in u-boot*) continue ;; esac
++            if [ -f "${dtb}" ] && [ ! -L "${dtb}" ]; then cp "${dtb}" "${board_out}/system.dtb"; break; fi
++        done
++    fi
+ 
+     # Kernel modules tarball
+     for mt in "${linux_deploy}/modules-"*.tgz "${deploy}/modules-"*.tgz; do
+@@ -313,10 +322,43 @@ EOF
+     echo "  wrote Versal autoboot glue (boot.scr, uEnv.txt, uboot.env, extlinux.conf)"
+ }
+ 
++# Zynq-7000 boot script. The board's overlay is loaded into the PL by u-boot
++# before Linux starts, so PS peripherals routed through the PL (EMIO Ethernet
++# via gmii_to_rgmii, for example) are present when their drivers probe.
++_write_zynq_boot_config() {
++    local board_out="$1"
++    rm -rf "${board_out}/extlinux" "${board_out}/base.bit"
++    if [ -n "${BITSTREAM:-}" ] && [ -f "${BITSTREAM}" ]; then
++        cp "${BITSTREAM}" "${board_out}/base.bit"
++    fi
++
++    local cmd; cmd=$(mktemp)
++    cat > "${cmd}" <<'BOOTSCR'
++echo "PYNQ boot"
++setenv part ${devtype} ${devnum}:${distro_bootpart}
++if load ${part} 0x4000000 base.bit; then
++    echo "Loading base.bit into the PL"
++    fpga loadb 0 0x4000000 ${filesize}
++fi
++load ${part} ${kernel_addr_r} zImage
++load ${part} ${fdt_addr_r} system.dtb
++bootz ${kernel_addr_r} - ${fdt_addr_r}
++BOOTSCR
++    mkimage -A arm -O linux -T script -C none -n "PYNQ ${BOARD} boot" \
++        -d "${cmd}" "${board_out}/boot.scr"
++    rm -f "${cmd}"
++    echo "  wrote boot.scr (loads base.bit, then zImage + system.dtb)"
++}
++
+ # Step 7: boot-partition config.
+ step_write_boot_config() {
+     echo ""; echo "--- Step 7: Boot config ---"
+     local board_out="${OUTPUT_DIR}/${BOARD}"
++
++    if [ "${ARCH}" = "arm" ]; then
++        _write_zynq_boot_config "${board_out}"
++        return
++    fi
+     install -d "${board_out}/extlinux"
+ 
+     case "${EDF_BOOT_MACHINE}" in
+@@ -330,7 +372,7 @@ step_write_boot_config() {
+                 echo "timeout 3"
+                 echo "label pynq"
+                 echo "    menu label PYNQ ${BOARD}"
+-                echo "    kernel /Image"
++                echo "    kernel /${KERNEL_NAME}"
+                 echo "    fdt /system.dtb"
+             } > "${board_out}/extlinux/extlinux.conf"
+             echo "  wrote extlinux/extlinux.conf"
+diff --git a/sdbuild/scripts/make_sdimage.sh b/sdbuild/scripts/make_sdimage.sh
+index af1992a..9114c95 100755
+--- a/sdbuild/scripts/make_sdimage.sh
++++ b/sdbuild/scripts/make_sdimage.sh
+@@ -14,6 +14,7 @@
+ #   BOOT_DIR     dir with BOOT.BIN, Image, system.dtb, extlinux/ (output/boot/<board>)
+ #   OUT_IMG      output image path (output/<board>-<version>.img)
+ #   EXTRA_BOOT   optional dir whose contents are copied into the boot partition
++#   KERNEL_NAME  kernel image file name in BOOT_DIR (Image, or zImage on Zynq-7000)
+ #   BOOT_SIZE_MB boot partition size in MiB (default 100)
+ #   ROOT_MARGIN_MB spare MiB added on top of the rootfs size (default 1024)
+ 
+@@ -23,14 +24,15 @@ ROOTFS_TAR="${ROOTFS_TAR:?ROOTFS_TAR must be set}"
+ BOOT_DIR="${BOOT_DIR:?BOOT_DIR must be set}"
+ OUT_IMG="${OUT_IMG:?OUT_IMG must be set}"
+ EXTRA_BOOT="${EXTRA_BOOT:-}"
++KERNEL_NAME="${KERNEL_NAME:-Image}"
+ BOOT_SIZE_MB="${BOOT_SIZE_MB:-100}"
+ ROOT_MARGIN_MB="${ROOT_MARGIN_MB:-1024}"
+ 
+ [ -f "${ROOTFS_TAR}" ] || { echo "ERROR: rootfs tarball not found: ${ROOTFS_TAR}" >&2; exit 1; }
+ [ -f "${BOOT_DIR}/BOOT.BIN" ] || { echo "ERROR: BOOT.BIN not found in ${BOOT_DIR}" >&2; exit 1; }
+-[ -f "${BOOT_DIR}/Image" ]    || { echo "ERROR: Image not found in ${BOOT_DIR}" >&2; exit 1; }
++[ -f "${BOOT_DIR}/${KERNEL_NAME}" ] || { echo "ERROR: ${KERNEL_NAME} not found in ${BOOT_DIR}" >&2; exit 1; }
+ [ -f "${BOOT_DIR}/system.dtb" ] || { echo "ERROR: system.dtb not found in ${BOOT_DIR}" >&2; exit 1; }
+-[ -f "${BOOT_DIR}/extlinux/extlinux.conf" ] || { echo "ERROR: extlinux/extlinux.conf not found in ${BOOT_DIR}" >&2; exit 1; }
++[ -f "${BOOT_DIR}/extlinux/extlinux.conf" ] || [ -f "${BOOT_DIR}/boot.scr" ] || { echo "ERROR: neither extlinux/extlinux.conf nor boot.scr found in ${BOOT_DIR}" >&2; exit 1; }
+ 
+ # ---- cleanup on exit -------------------------------------------------------
+ # The build container has no udev, so `losetup -P` does not create per-partition
+@@ -122,12 +124,15 @@ if [ -n "${EXTRA_BOOT}" ] && [ -d "${EXTRA_BOOT}" ]; then
+ fi
+ # Authoritative EDF boot artefacts win over anything from the rootfs /boot.
+ sudo cp "${BOOT_DIR}/BOOT.BIN" "${MNT_BOOT}/BOOT.BIN"
+-sudo cp "${BOOT_DIR}/Image" "${MNT_BOOT}/Image"
++sudo cp "${BOOT_DIR}/${KERNEL_NAME}" "${MNT_BOOT}/${KERNEL_NAME}"
+ sudo cp "${BOOT_DIR}/system.dtb" "${MNT_BOOT}/system.dtb"
+-sudo mkdir -p "${MNT_BOOT}/extlinux"
+-sudo cp "${BOOT_DIR}/extlinux/extlinux.conf" "${MNT_BOOT}/extlinux/extlinux.conf"
+-# Optional autoboot glue (Versal ships boot.scr / uEnv.txt / uboot.env).
+-for f in boot.scr boot.scr.uimg uEnv.txt uboot.env; do
++if [ -f "${BOOT_DIR}/extlinux/extlinux.conf" ]; then
++    sudo mkdir -p "${MNT_BOOT}/extlinux"
++    sudo cp "${BOOT_DIR}/extlinux/extlinux.conf" "${MNT_BOOT}/extlinux/extlinux.conf"
++fi
++# Optional autoboot glue (Versal ships boot.scr / uEnv.txt / uboot.env;
++# Zynq-7000 ships boot.scr and the base.bit it loads).
++for f in boot.scr boot.scr.uimg uEnv.txt uboot.env base.bit; do
+     [ -f "${BOOT_DIR}/${f}" ] && sudo cp "${BOOT_DIR}/${f}" "${MNT_BOOT}/${f}"
+ done
+ sync
+diff --git a/sdbuild/ubuntu/noble/arm/config b/sdbuild/ubuntu/noble/arm/config
+new file mode 100644
+index 0000000..cbe4d03
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/config
+@@ -0,0 +1,4 @@
++STAGE2_PACKAGES_arm := udev libsds python_packages_noble jupyter
++STAGE2_PACKAGES_arm += bootpy
++STAGE2_PACKAGES_arm += clear_pl_statefile
++STAGE3_PACKAGES_arm := xrtlib pynq x11 resizefs
+diff --git a/sdbuild/ubuntu/noble/arm/multistrap.config b/sdbuild/ubuntu/noble/arm/multistrap.config
+new file mode 100644
+index 0000000..8310b85
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/multistrap.config
+@@ -0,0 +1,211 @@
++[General]
++debootstrap=Noble
++aptsources=Noble
++arch=armhf
++allowrecommends=true
++addimportant=true
++noauth=true
++
++[Noble]
++source=http://ports.ubuntu.com/ubuntu-ports
++suite=noble universe
++keyring=ubuntu-keyring
++packages=python3-networkx python3-lxml python3-numexpr
++packages=python3-transitions python3-sympy python3-cffi
++packages=python3-sqlalchemy python3-pytest
++packages=python3-pytest-sourceorder python3-uvloop
++packages=python3-retrying python3-scipy
++packages=python3-pil python3-matplotlib python3-venv
++packages=python3-pygraphviz python3-setuptools python3-pip
++packages=libopencv-dev python3-opencv
++packages=python3-wheel python3-netifaces python3-skimage
++packages=2ping adduser apt apt-utils attr autoconf autoconf-archive
++packages=automake autotools-dev base-files base-passwd bash bash-completion
++packages=binfmt-support binutils bison blt bsdextrautils bsdutils
++packages=build-essential bzip2 ca-certificates check cmake cmake-data
++packages=coreutils cpp cpufrequtils cron curl dash dbus dbus-x11
++packages=debconf debhelper debianutils dh-python diffutils dmsetup dpkg
++packages=dpkg-dev e2fsprogs ethtool file findutils flex
++packages=fontconfig fontconfig-config fonts-dejavu-core fonts-lmodern
++packages=fonts-texgyre fswebcam g++ gawk gcc gettext
++packages=gettext-base gfortran git git-man gnupg gperf gpgv grep groff-base gsfonts gzip
++packages=help2man hicolor-icon-theme hostname htop i2c-tools
++packages=icu-devtools ifupdown init init-system-helpers intltool-debian
++packages=iproute2 iputils-ping isc-dhcp-client isc-dhcp-common iso-codes
++packages=javascript-common krb5-locales language-pack-en
++packages=language-pack-en-base less libaacs0
++packages=libacl1 libaio1t64
++packages=libapparmor1
++packages=libarchive13t64 libasan8 libasn1-8t64-heimdal libasprintf-dev
++packages=libasprintf0v5 libatk1.0-0t64 libatk1.0-dev
++packages=libopenblas0-pthread libopenblas-dev libatomic1 libattr1
++packages=libaudit-common libaudit1 libavahi-client3 libavahi-common-data
++packages=libavahi-common3 libavcodec-dev libavformat-dev libavutil-dev
++packages=libb-hooks-endofscope-perl libb-hooks-op-check-perl
++packages=libbareword-filehandles-perl libbdplus0 libbison-dev libblas-dev
++packages=libblas3 libblkid1 libboost-atomic-dev libboost-chrono-dev
++packages=libboost-date-time-dev libboost-filesystem-dev
++packages=libboost-serialization-dev libboost-system-dev libboost-test-dev
++packages=libboost-thread-dev libboost-dev libbsd-dev libbsd0 libbz2-1.0
++packages=libc-ares-dev libcares2 libc-bin libc-dev-bin libcairo-gobject2
++packages=libcairo-script-interpreter2 libcairo2 libcairo2-dev libcap-ng0
++packages=libcap2 libcap2-bin libcc1-0 libcgi-fast-perl libcgi-pm-perl
++packages=libclass-c3-perl libclass-c3-xs-perl libclass-method-modifiers-perl
++packages=libclass-xsaccessor-perl libcpan-changes-perl
++packages=libcpufreq0 libcups2t64 libcupsfilters2t64
++packages=libcupsimage2t64 libcurl4t64 libcurl3t64-gnutls libdata-optlist-perl
++packages=libdata-perl-perl libdata-section-perl libdatrie1 libdb5.3t64
++packages=libdbus-1-3 libdbus-glib-1-2 libdc1394-dev
++packages=libdebconfclient0 libdevel-caller-perl
++packages=libdevel-globaldestruction-perl libdevel-lexalias-perl
++packages=libdevmapper1.02.1 libdpkg-perl libdrm-amdgpu1 libdrm-dev libdrm2
++packages=libedit2 libelf1t64 libencode-locale-perl liberror-perl libestr0
++packages=libexpat1 libexpat1-dev libexporter-tiny-perl libfakeroot
++packages=libfcgi-perl libfdisk1 libffi-dev libfile-basedir-perl
++packages=libfile-copy-recursive-perl libfile-desktopentry-perl
++packages=libfile-fcntllock-perl libfile-homedir-perl libfile-listing-perl
++packages=libfile-mimeinfo-perl libfile-slurp-perl libfile-which-perl libfl-dev
++packages=libfont-afm-perl libfontconfig1 libfontconfig1-dev libfontenc1
++packages=libfreetype6 libfreetype-dev libftdi-dev libftdi1
++packages=libgcrypt20 libgd3 libgdbm-dev libgdk-pixbuf2.0-0
++packages=libgdk-pixbuf-2.0-0 libgdk-pixbuf-2.0-dev
++packages=libgetopt-long-descriptive-perl libgettextpo-dev libgettextpo0
++packages=libgfortran5 libgirepository-1.0-1 libglapi-mesa
++packages=libglib2.0-0t64 libglib2.0-bin libglib2.0-data libglib2.0-dev
++packages=libglibmm-2.4-1t64 libglibmm-2.4-dev libgme0 libgmp-dev libgmp10
++packages=libgmpxx4ldbl libgnutls-openssl27t64 libgomp1 libgpg-error0 libgpm2
++packages=libgraphite2-3 libgs-common libgsm1 libgssapi-krb5-2
++packages=libgssapi3t64-heimdal libgtk2.0-0t64 libgtk2.0-bin libgtk2.0-common
++packages=libgtk2.0-dev libharfbuzz-dev libharfbuzz-gobject0 libharfbuzz-icu0
++packages=libharfbuzz0b libhcrypto5t64-heimdal libhdb9t64-heimdal
++packages=libheimbase1t64-heimdal libheimntlm0t64-heimdal libhogweed6t64
++packages=libhtml-form-perl libhtml-format-perl libhtml-parser-perl
++packages=libhtml-tagset-perl libhtml-tree-perl libhttp-cookies-perl
++packages=libhttp-daemon-perl libhttp-date-perl libhttp-message-perl
++packages=libhttp-negotiate-perl libhx509-5t64-heimdal libi2c-dev libice-dev
++packages=libice6 libicu-dev libidn12 libijs-0.35
++packages=libimport-into-perl libindirect-perl libintl-perl libio-html-perl
++packages=libio-socket-inet6-perl libio-socket-ssl-perl libio-stringy-perl
++packages=libipc-system-simple-perl libjbig-dev libjbig0 libjbig2dec0
++packages=libjpeg-dev libjpeg-turbo8 libjpeg-turbo8-dev libjpeg8 libjpeg8-dev
++packages=libjs-inherits libjs-jquery libjs-underscore
++packages=libk5crypto3 libkdc2t64-heimdal libkeyutils1 libkmod2 libkpathsea6
++packages=libkrb5-26t64-heimdal libkrb5-3 libkrb5support0 liblapack-dev liblapack3
++packages=liblcms2-2 liblcms2-dev libldap2 libldb2
++packages=liblexical-sealrequirehints-perl liblist-moreutils-perl
++packages=liblocale-gettext-perl liblockfile-bin liblockfile1
++packages=libltdl-dev libltdl7
++packages=liblua5.4-0 liblwp-mediatypes-perl liblwp-protocol-https-perl
++packages=liblzma-dev liblzma5 liblzo2-2 libmagic1t64 libmail-sendmail-perl
++packages=libmailtools-perl libmodplug1 libmodule-build-perl
++packages=libmodule-implementation-perl
++packages=libmodule-runtime-perl libmoo-perl
++packages=libmoox-handlesvia-perl libmount1 libmp3lame0 libmpc3
++packages=libmro-compat-perl libmultidimensional-perl
++packages=libnamespace-autoclean-perl libnamespace-clean-perl
++packages=libncurses6 libncurses-dev libncursesw6
++packages=libnet-dbus-perl
++packages=libnet-http-perl libnet-smtp-ssl-perl libnet-ssleay-perl libnettle8t64
++packages=libnl-3-200 libnl-genl-3-200 libogg0
++packages=libopenexr-dev libopts25 libopus0 liborc-0.4-0t64
++packages=libp11-kit0 libpackage-stash-perl
++packages=libpackage-stash-xs-perl libpadwalker-perl libpam-modules
++packages=libpam-modules-bin libpam-runtime libpam-systemd libpam0g
++packages=libpango-1.0-0 libpango1.0-dev libpangocairo-1.0-0 libpangoft2-1.0-0
++packages=libpangoxft-1.0-0 libpaper-utils libpaper1 libparams-classify-perl
++packages=libparams-util-perl libparams-validate-perl libpath-tiny-perl
++packages=libpcre2-16-0 libpcre3 libpcre3-dev libpcre2-32-0
++packages=libpcsclite1 libpipeline1 libpixman-1-0 libpixman-1-dev
++packages=libpod-markdown-perl
++packages=libpolkit-agent-1-0 libpolkit-gobject-1-0
++packages=libpopt0 libpotrace0 libptexenc1 libpthread-stubs0-dev
++packages=libpython3-dev libpython3-stdlib
++packages=libraw1394-11
++packages=libraw1394-dev libraw1394-tools libroken19t64-heimdal librole-tiny-perl
++packages=librtmp1 libsasl2-2 libsasl2-modules libsasl2-modules-db libseccomp2
++packages=libselinux1 libsemanage-common libsemanage2 libsepol2 libshine3
++packages=libsigc++-2.0-0v5 libsigc++-2.0-dev libsigsegv2 libslang2 libsm-dev
++packages=libsm6 libsmartcols1 libsocket6-perl libsoftware-license-perl
++packages=libsoxr0 libspeex1 libsqlite3-0 libsqlite3-dev libss2 libssh-gcrypt-4
++packages=libssl-dev libssl-doc libstdc++6
++packages=libstrictures-perl libsub-exporter-perl
++packages=libsub-exporter-progressive-perl libsub-identify-perl
++packages=libsub-install-perl libsub-name-perl libswresample-dev libswscale-dev
++packages=libsynctex-dev libsys-hostname-long-perl libsystemd0 libtalloc2
++packages=libtasn1-6 libtcl8.6 libtdb1 libterm-ui-perl libtevent0t64
++packages=libtext-iconv-perl libtext-soundex-perl libtext-template-perl
++packages=libtext-unidecode-perl libthai-data libthai0 libtheora0
++packages=libtie-ixhash-perl libtiff6 libtiff-dev libtimedate-perl
++packages=libtinfo6 libtk8.6 libtool libtry-tiny-perl
++packages=libtwolame0 libtype-tiny-perl libtype-tiny-xs-perl libubsan1 libudev1
++packages=libunicode-utf8-perl liburi-perl libusb-0.1-4 libusb-1.0-0
++packages=libusb-1.0-0-dev libusb-1.0-doc libusb-dev libutempter0
++packages=libuuid1 libv4l-0t64 libv4lconvert0t64 libvariable-magic-perl libvorbis0a
++packages=libvorbisenc2 libwavpack1 libwbclient0 libwebp-dev libwind0t64-heimdal
++packages=libwrap0 libwww-perl libwww-robotrules-perl libx11-6 libx11-data
++packages=libx11-dev libx11-doc libx11-protocol-perl libx11-xcb-dev libx11-xcb1
++packages=libxau-dev libxau6 libxaw7 libxcb-dri2-0 libxcb-dri2-0-dev
++packages=libxcb-dri3-0 libxcb-dri3-dev libxcb-glx0 libxcb-glx0-dev
++packages=libxcb-present-dev libxcb-present0 libxcb-randr0 libxcb-randr0-dev
++packages=libxcb-render0 libxcb-render0-dev libxcb-shape0 libxcb-shape0-dev
++packages=libxcb-shm0 libxcb-shm0-dev libxcb-sync-dev libxcb-sync1
++packages=libxcb-xfixes0 libxcb-xfixes0-dev libxcb1 libxcb1-dev
++packages=libxcomposite-dev libxcomposite1 libxcursor-dev libxcursor1
++packages=libxdamage-dev libxdamage1 libxdmcp-dev libxdmcp6 libxext-dev
++packages=libxext6 libxfixes-dev libxfixes3 libxft-dev libxft2 libxi-dev libxi6
++packages=libxinerama-dev libxinerama1 libxml-libxml-perl
++packages=libxml-namespacesupport-perl libxml-parser-perl libxml-sax-base-perl
++packages=libxml-sax-expat-perl libxml-sax-perl libxml-twig-perl
++packages=libxml-xpathengine-perl libxml2 libxml2-dev libxml2-utils libxmu-dev
++packages=libxmu-headers libxmu6 libxmuu1 libxpm4 libxrandr-dev libxrandr2
++packages=libxrender-dev libxrender1 libxshmfence-dev libxshmfence1
++packages=libxslt1-dev libxslt1.1 libxss-dev libxss1 libxt-dev libxt6t64 libxtst6
++packages=libxv1 libxvidcore4 libxxf86dga1 libxxf86vm1 libyaml-0-2
++packages=libyaml-tiny-perl libzip-dev libzvbi-common libzvbi0t64
++packages=libzzip-0-13t64 libzzip-dev linux-libc-dev lmodern
++packages=locales lockfile-progs login logrotate lsb-base lsb-release lsof m4
++packages=make makedev man-db manpages manpages-dev mawk mesa-common-dev
++packages=media-types kmod mount nano ncdu
++packages=ncurses-base ncurses-bin ncurses-term net-tools netbase ntpdate
++packages=openssh-client openssh-server openssh-sftp-server openssl
++packages=passwd patch perl perl-base perl-modules-5.38
++packages=pkg-config po-debconf polkitd poppler-data procps psmisc python-is-python3
++packages=python3-apt python3-ldb python3-minimal
++packages=python3-samba
++packages=python3-talloc python3-tdb python3-tk
++packages=python3 python3-apt python3-chardet python3-dbus
++packages=python3-dev python3-gi
++packages=python3-requests python3-six
++packages=python3-software-properties python3-urllib3 readline-common rename
++packages=rsync rsyslog samba samba-common samba-common-bin
++packages=samba-dsdb-modules samba-libs samba-vfs-modules sed sensible-utils
++packages=sgml-base shared-mime-info software-properties-common ssh
++packages=ssh-import-id sudo systemd systemd-sysv sysvinit-utils tar tcl
++packages=tcl-dev tcl8.6 tcl8.6-dev tcpd tdb-tools tex-common
++packages=texinfo tk tk-dev tk8.6 tk8.6-blt2.5 tk8.6-dev tree
++packages=tzdata ubuntu-keyring ucf udev unattended-upgrades unzip update-inetd
++packages=usbutils util-linux vim vim-common vim-runtime wget wpasupplicant
++packages=x11-common x11proto-dev
++packages=xauth xbitmaps xdg-user-dirs xdg-utils
++packages=xml-core xorg-sgml-doctools xterm xtrans-dev xz-utils zip zlib1g
++packages=zlib1g-dev wireless-tools libcurl4-openssl-dev libcgraph6
++packages=libgraphviz-dev gdb strace valgrind libreadline-dev
++packages=graphviz iw ccache fake-hwclock libruby ruby rubygems-integration
++packages=xserver-xorg xinit libcanberra-gtk-module
++packages=fluxbox bluez bluez-tools xorg eterm
++packages=fakeroot fakechroot libsensors-dev isc-dhcp-server haveged
++packages=firefox xutils-dev xorg-dev libudev-dev
++packages=libgtest-dev libboost-all-dev uuid-dev libyaml-dev
++packages=opencl-headers ocl-icd-dev ocl-icd-opencl-dev libsysfs-dev
++packages=libgoogle-glog-dev libeigen3-dev devmem2 at-spi2-core
++packages=libjemalloc-dev libjemalloc2 libgoogle-glog0v6t64
++packages=libgflags-dev libgflags2.2
++packages=libprotobuf-dev libjson-c-dev googletest protobuf-compiler
++packages=cpio flac portaudio19-dev rapidjson-dev pybind11-dev
++packages=fdisk nodejs ubuntu-minimal
++packages=linux-firmware openjdk-8-jdk pandoc pandoc-data
++packages=libpng-dev libdw-dev libelf-dev libsystemd-dev libjson-glib-dev
++packages=libcxxopts-dev libboost-program-options-dev ocl-icd-libopencl1
++packages=xserver-xorg-dev xfonts-base cppcheck dkms pciutils
++packages=systemtap-sdt-dev python3-pybind11 lm-sensors
++packages=cloud-guest-utils wireless-regdb
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/dhcp/dhclient.conf.diff b/sdbuild/ubuntu/noble/arm/patch/etc/dhcp/dhclient.conf.diff
+new file mode 100644
+index 0000000..e5efdde
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/dhcp/dhclient.conf.diff
+@@ -0,0 +1,17 @@
++--- etc/dhcp/dhclient.conf
+++++ etc/dhcp/dhclient.conf
++@@ -24,10 +24,10 @@
++ #supersede domain-name "fugue.com home.vix.com";
++ #prepend domain-name-servers 127.0.0.1;
++ #require subnet-mask, domain-name-servers;
++-timeout 300;
++-#retry 60;
++-#reboot 10;
++-#select-timeout 5;
+++timeout 10;
+++retry 1;
+++reboot 3;
+++select-timeout 0;
++ #initial-interval 2;
++ #script "/sbin/dhclient-script";
++ #media "-link0 -link1 -link2", "link0 link1";
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/environment.diff b/sdbuild/ubuntu/noble/arm/patch/etc/environment.diff
+new file mode 100644
+index 0000000..d24dd10
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/environment.diff
+@@ -0,0 +1,9 @@
++--- etc/environment
+++++ etc/environment
++@@ -1 +1,5 @@
++-PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
+++PATH="/opt/microblazeel-xilinx-elf/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
+++LC_ALL=en_US.UTF-8
+++LANG=en_US.UTF-8
+++PYNQ_JUPYTER_NOTEBOOKS=/home/xilinx/jupyter_notebooks
+++PYNQ_PYTHON=python3
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/issue.diff b/sdbuild/ubuntu/noble/arm/patch/etc/issue.diff
+new file mode 100644
+index 0000000..f149bad
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/issue.diff
+@@ -0,0 +1,6 @@
++--- etc/issue
+++++ etc/issue
++@@ -1,2 +1,2 @@
++-Ubuntu 24.04 LTS \n \l
+++PYNQ Linux, based on Ubuntu 24.04 \n \l
++ 
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/issue.net.diff b/sdbuild/ubuntu/noble/arm/patch/etc/issue.net.diff
+new file mode 100644
+index 0000000..9693c23
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/issue.net.diff
+@@ -0,0 +1,5 @@
++--- etc/issue.net
+++++ etc/issue.net
++@@ -1 +1 @@
++-Ubuntu 24.04 LTS
+++PYNQ Linux, based on Ubuntu 24.04
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/legal.diff b/sdbuild/ubuntu/noble/arm/patch/etc/legal.diff
+new file mode 100644
+index 0000000..efeb3c3
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/legal.diff
+@@ -0,0 +1,13 @@
++--- etc/legal
+++++ etc/legal
++@@ -1,8 +1,8 @@
++ 
++-The programs included with the Ubuntu system are free software;
+++The programs included with the PYNQ Linux system are free software;
++ the exact distribution terms for each program are described in the
++ individual files in /usr/share/doc/*/copyright.
++ 
++-Ubuntu comes with ABSOLUTELY NO WARRANTY, to the extent permitted by
+++PYNQ Linux comes with ABSOLUTELY NO WARRANTY, to the extent permitted by
++ applicable law.
++ 
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/lsb-release.diff b/sdbuild/ubuntu/noble/arm/patch/etc/lsb-release.diff
+new file mode 100644
+index 0000000..df8eb51
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/lsb-release.diff
+@@ -0,0 +1,11 @@
++--- etc/lsb-release
+++++ etc/lsb-release
++@@ -1,4 +1,4 @@
++-DISTRIB_ID=Ubuntu
++-DISTRIB_RELEASE=24.04
++-DISTRIB_CODENAME=noble
++-DISTRIB_DESCRIPTION="Ubuntu 24.04 LTS"
+++DISTRIB_ID=pynqlinux
+++DISTRIB_RELEASE=v4.0.0
+++DISTRIB_CODENAME=Verona
+++DISTRIB_DESCRIPTION="PYNQ Linux, based on Ubuntu 24.04"
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/pip.conf.diff b/sdbuild/ubuntu/noble/arm/patch/etc/pip.conf.diff
+new file mode 100644
+index 0000000..5cf0843
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/pip.conf.diff
+@@ -0,0 +1,5 @@
++--- /dev/null
+++++ etc/pip.conf
++@@ -0,0 +1,2 @@
+++[install]
+++use-pep517 = yes
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/python3.12/sitecustomize.py.diff b/sdbuild/ubuntu/noble/arm/patch/etc/python3.12/sitecustomize.py.diff
+new file mode 100644
+index 0000000..322e478
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/python3.12/sitecustomize.py.diff
+@@ -0,0 +1,10 @@
++--- etc/python3.12/sitecustomize.py
+++++ etc/python3.12/sitecustomize.py
++@@ -5,3 +5,7 @@
++     pass
++ else:
++     apport_python_hook.install()
+++
+++# Import libgomp to work around OpenCV load order issues
+++import ctypes
+++ctypes.cdll.LoadLibrary("libgomp.so.1")
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/samba/smb.conf.diff b/sdbuild/ubuntu/noble/arm/patch/etc/samba/smb.conf.diff
+new file mode 100644
+index 0000000..c2ca228
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/samba/smb.conf.diff
+@@ -0,0 +1,32 @@
++--- etc/samba/smb.conf
+++++ etc/samba/smb.conf
++@@ -167,6 +167,12 @@
++ # public shares, not just authenticated ones
++    usershare allow guests = yes
++ 
+++# grahams - will allow some symlink following, globally disable here
+++unix extensions = no
+++
+++# Work better inside corporate network
+++map untrusted to domain = yes
+++
++ #======================= Share Definitions =======================
++ 
++ # Un-comment the following (and tweak the other settings below to suit)
++@@ -240,3 +246,16 @@
++ # to the drivers directory for these users to have write rights in it
++ ;   write list = root, @lpadmin
++ 
+++
+++[xilinx]
+++path = /home/xilinx
+++browsable =yes
+++writable = yes
+++guest ok = yes
+++read only = no
+++valid users = samba xilinx
+++follow symlinks = yes
+++wide links = yes
+++create mask = 664
+++directory mask = 755
+++force user = xilinx
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/ssh/ssh_config.diff b/sdbuild/ubuntu/noble/arm/patch/etc/ssh/ssh_config.diff
+new file mode 100644
+index 0000000..3164068
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/ssh/ssh_config.diff
+@@ -0,0 +1,13 @@
++--- etc/ssh/ssh_config
+++++ etc/ssh/ssh_config
++@@ -20,8 +20,8 @@
++ 
++ Host *
++ #   ForwardAgent no
++-#   ForwardX11 no
++-#   ForwardX11Trusted yes
+++ForwardX11 yes
+++ForwardX11Trusted yes
++ #   PasswordAuthentication yes
++ #   HostbasedAuthentication no
++ #   GSSAPIAuthentication no
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/sudoers.diff b/sdbuild/ubuntu/noble/arm/patch/etc/sudoers.diff
+new file mode 100644
+index 0000000..4213156
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/sudoers.diff
+@@ -0,0 +1,13 @@
++--- etc/sudoers
+++++ etc/sudoers
++@@ -6,9 +6,8 @@
++ #
++ # See the man page for details on how to write a sudoers file.
++ #
++-Defaults	env_reset
++ Defaults	mail_badpass
++-Defaults	secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+++Defaults env_keep="BOARD"
++ 
++ # This fixes CVE-2005-4890 and possibly breaks some versions of kdesu
++ # (#1011624, https://bugs.kde.org/show_bug.cgi?id=452532)
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/systemd/network/99-default.link.diff b/sdbuild/ubuntu/noble/arm/patch/etc/systemd/network/99-default.link.diff
+new file mode 100644
+index 0000000..63adf39
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/systemd/network/99-default.link.diff
+@@ -0,0 +1,8 @@
++diff --git a/99-default.link b/99-default.link
++new file mode 120000
++index 0000000..dc1dc0c
++--- /dev/null
+++++ b/99-default.link
++@@ -0,0 +1 @@
+++/dev/null
++\ No newline at end of file
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/10-help-text.diff b/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/10-help-text.diff
+new file mode 100644
+index 0000000..773284c
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/10-help-text.diff
+@@ -0,0 +1,12 @@
++--- etc/update-motd.d/10-help-text
+++++ etc/update-motd.d/10-help-text
++@@ -21,6 +21,6 @@
++ #    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ 
++ printf "\n"
++-printf " * Documentation:  https://help.ubuntu.com\n"
++-printf " * Management:     https://landscape.canonical.com\n"
++-printf " * Support:        https://ubuntu.com/pro\n"
+++#printf " * Documentation:  https://help.ubuntu.com\n"
+++#printf " * Management:     https://landscape.canonical.com\n"
+++#printf " * Support:        https://ubuntu.com/pro\n"
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/50-motd-news.diff b/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/50-motd-news.diff
+new file mode 100644
+index 0000000..46d8223
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/50-motd-news.diff
+@@ -0,0 +1,121 @@
++--- etc/update-motd.d/50-motd-news
+++++ etc/update-motd.d/50-motd-news
++@@ -29,118 +29,4 @@
++ #                                                                     - Dustin
++ ##############################################################################
++ 
++-# Source the local configuration
++-[ -r /etc/default/motd-news ] && . /etc/default/motd-news
++-
++-# Exit immediately, unless we're enabled
++-# This makes this script very easy to disable in /etc/default/motd-news configuration
++-[ "$ENABLED" = "1" ] || exit 0
++-
++-# Ensure sane defaults
++-[ -n "$URLS" ] || URLS="https://motd.ubuntu.com"
++-[ -n "$WAIT" ] || WAIT=5
++-[ -n "$CACHE" ] || CACHE="/var/cache/motd-news"
++-[ "$1" = "--force" ] && FORCED=1
++-
++-# Ensure we print safely, maximum of the first 10 lines,
++-# maximum of the first 80 chars per line, no control chars
++-safe_print() {
++-	cat "$1" | head -n 10 | tr -d '\000-\011\013\014\016-\037' | cut -c -80
++-}
++-
++-
++-# If we're not forcing an update, and we have a cached motd-news file,
++-# then just print it and exit as quickly as possible, for login performance.
++-# Note that systemd should keep this cache file up to date, asynchronously
++-if [ "$FORCED" != "1" ]; then
++-  	if [ -r $CACHE ]; then
++-		echo
++-		safe_print $CACHE
++-	elif [ "$(id -u)" -eq 0 ]; then
++-		: > $CACHE
++-	fi
++-	exit 0
++-fi
++-
++-# If we've made it here, we've been given the --force argument,
++-# probably from the systemd motd-news.service.  Let's update...
++-
++-# Abort early if wget is missing
++-[ -x /usr/bin/wget ] || exit 0
++-
++-# Generate our temp files, clean up when done
++-NEWS=$(mktemp) || exit 1
++-ERR=$(mktemp) || exit 1
++-CLOUD=$(mktemp) || exit 1
++-trap "rm -f $NEWS $ERR $CLOUD" HUP INT QUIT ILL TRAP KILL BUS TERM
++-
++-# Construct a user agent, similar to Firefox/Chrome/Safari/IE to
++-# ensure a proper, tailored, accurate message of the day
++-
++-# wget browser version, for debug purposes
++-wget_ver="$(dpkg -l wget | awk '$1 == "ii" { print($3); exit(0); }')"
++-
++-# Distribution version, for messages releated to this Ubuntu release
++-. /etc/lsb-release
++-lsb=$(echo "$DISTRIB_DESCRIPTION" | sed -e "s/ /\//g")
++-codename="$DISTRIB_CODENAME"
++-
++-# Kernel version and CPU type, for messages related to a particular revision or hardware
++-platform="$(uname -o)/$(uname -r)/$(uname -m)"
++-arch="$(uname -m)"
++-cpu="$(grep -m1 "^model name" /proc/cpuinfo | sed -e "s/.*: //" -e "s:\s\+:/:g")"
++-cloud_id="unknown"
++-if [ -x /usr/bin/cloud-id ]; then
++-    /usr/bin/cloud-id > "$CLOUD" 2>/dev/null
++-    if [ "$?" -eq "0" ]; then
++-        # sanitize it a bit, just in case
++-        cloud_id=$(cut -c -40 "${CLOUD}" | tr -c -d '[:alnum:]')
++-        if [ -z "${cloud_id}" ]; then
++-            cloud_id="unknown"
++-        fi
++-    fi
++-fi
++-
++-# Piece together the user agent
++-USER_AGENT="wget/$wget_ver $lsb $platform $cpu cloud_id/$cloud_id"
++-
++-# Loop over any configured URLs
++-for u in $URLS; do
++-	# Ensure https:// protocol, for security reasons
++-	case $u in
++-		https://*)
++-			true
++-		;;
++-		https://motd.ubuntu.com)
++-			u="$u/$codename/$arch"
++-		;;
++-		*)
++-			continue
++-		;;
++-	esac
++-	# If we're forced, set the wait to much higher (1 minute)
++-	[ "$FORCED" = "1" ] && WAIT=60
++-	# Fetch and print the news motd
++-	result=0
++-	not_found_is_ok=0
++-	wget --timeout "$WAIT" -U "$USER_AGENT" -O- --content-on-error "$u" >"$NEWS" 2>"$ERR" || result=$?
++-	# from wget's manpage: 8   Server issued an error response.
++-	if [ $result -eq 8 ]; then
++-		if grep -q "ERROR 404" "$ERR"; then
++-			# The server's 404 document is the generic, non cloud-specific, motd-news
++-			# content present in the index.txt file
++-			not_found_is_ok=1
++-		fi
++-	fi
++-	if [ $result -eq 0 ] || [ $not_found_is_ok -eq 1 ]; then
++-		echo
++-		# At most, 10 lines of text, remove control characters, print at most 80 characters per line
++-		safe_print "$NEWS"
++-		# Try to update the cache
++-		safe_print "$NEWS" 2>/dev/null >$CACHE || true
++-	else
++-		: > "$CACHE"
++- 	fi
++-done
++-rm -f "$NEWS" "$ERR" "$CLOUD"
++ exit 0
+diff --git a/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/92-unattended-upgrades.diff b/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/92-unattended-upgrades.diff
+new file mode 100644
+index 0000000..405c659
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/etc/update-motd.d/92-unattended-upgrades.diff
+@@ -0,0 +1,8 @@
++--- etc/update-motd.d/92-unattended-upgrades
+++++ etc/update-motd.d/92-unattended-upgrades
++@@ -1,5 +1,2 @@
++ #!/bin/sh
++ 
++-if [ -x /usr/share/unattended-upgrades/update-motd-unattended-upgrades ]; then
++-    exec /usr/share/unattended-upgrades/update-motd-unattended-upgrades
++-fi
+diff --git a/sdbuild/ubuntu/noble/arm/patch/usr/lib/os-release.diff b/sdbuild/ubuntu/noble/arm/patch/usr/lib/os-release.diff
+new file mode 100644
+index 0000000..e944bb3
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/usr/lib/os-release.diff
+@@ -0,0 +1,27 @@
++--- usr/lib/os-release
+++++ usr/lib/os-release
++@@ -1,13 +1,12 @@
++-PRETTY_NAME="Ubuntu 24.04 LTS"
++-NAME="Ubuntu"
++-VERSION_ID="24.04"
++-VERSION="24.04 LTS (Noble Numbat)"
++-VERSION_CODENAME=noble
++-ID=ubuntu
++-ID_LIKE=debian
++-HOME_URL="https://www.ubuntu.com/"
++-SUPPORT_URL="https://help.ubuntu.com/"
++-BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
++-PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+++NAME="PynqLinux"
+++VERSION="4.0.0 (Verona)"
+++ID=pynqlinux
+++ID_LIKE=ubuntu
+++PRETTY_NAME="PynqLinux, based on Ubuntu 24.04"
+++VERSION_ID="4.0.0"
+++HOME_URL="https://www.pynq.io/"
+++SUPPORT_URL="https://discuss.pynq.io/"
+++BUG_REPORT_URL="https://www.pynq.io"
+++PRIVACY_POLICY_URL="https://www.pynq.io"
+++VERSION_CODENAME=Verona
++ UBUNTU_CODENAME=noble
++-LOGO=ubuntu-logo
+diff --git a/sdbuild/ubuntu/noble/arm/patch/usr/lib/systemd/system/serial-getty@.service.diff b/sdbuild/ubuntu/noble/arm/patch/usr/lib/systemd/system/serial-getty@.service.diff
+new file mode 100644
+index 0000000..6e09e08
+--- /dev/null
++++ b/sdbuild/ubuntu/noble/arm/patch/usr/lib/systemd/system/serial-getty@.service.diff
+@@ -0,0 +1,11 @@
++--- usr/lib/systemd/system/serial-getty@.service
+++++ usr/lib/systemd/system/serial-getty@.service
++@@ -31,7 +31,7 @@
++ # The '-o' option value tells agetty to replace 'login' arguments with an
++ # option to preserve environment (-p), followed by '--' for safety, and then
++ # the entered username.
++-ExecStart=-/sbin/agetty -o '-p -- \\u' --keep-baud 115200,57600,38400,9600 - $TERM
+++ExecStart=-/sbin/agetty --autologin xilinx --keep-baud 115200,57600,38400,9600 - $TERM
++ Type=idle
++ Restart=always
++ UtmpIdentifier=%I

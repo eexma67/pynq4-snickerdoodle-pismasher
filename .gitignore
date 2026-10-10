@@ -1,0 +1,36 @@
+# Only the sources are tracked. The working tree also holds the PYNQ clone,
+# krtkl's repos and schematics, build caches, logs and build output.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/BUILD_GUIDE.md
+!/build_image.sh
+!/edf_shell.sh
+!/patches/
+!/boards/
+!/calc_overlay/
+
+*.log
+*.jou
+*.pb
+.Xil/
+
+# Base overlay: build output, and krtkl's files (downloaded by the makefile)
+/boards/*/base/build/
+/boards/*/base/NA/
+/boards/*/base/base.bit
+/boards/*/base/base.hwh
+/boards/*/base/base.xsa
+/boards/*/base/src/base_bd.tcl
+/boards/*/base/src/krtkl_hdmi_pass_through_2018.2.tcl
+/boards/*/base/src/piSmasher_4.1.xdc
+
+# Calculator overlay: sources only
+/calc_overlay/*
+!/calc_overlay/build_calc.tcl
+!/calc_overlay/src/
+!/calc_overlay/driver/
+!/calc_overlay/sim/
+/calc_overlay/sim/*
+!/calc_overlay/sim/tb_calc_axi.v

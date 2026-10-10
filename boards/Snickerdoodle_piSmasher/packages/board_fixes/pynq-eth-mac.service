@@ -1,0 +1,12 @@
+[Unit]
+Description=Set stable Ethernet MAC addresses and RX ring size
+Before=network-pre.target networking.service
+Wants=network-pre.target
+After=sys-subsystem-net-devices-eth0.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pynq-eth-mac.sh
+
+[Install]
+WantedBy=multi-user.target
